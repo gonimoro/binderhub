@@ -16,6 +16,7 @@ import { Progress, PROGRESS_STATES } from "./Progress.jsx";
  * @param {(l: boolean) => void} setIsLaunching
  * @param {(p: PROGRESS_STATES) => void} setProgressState
  * @param {(e: boolean) => void} setEnsureLogsVisible
+ * @param {(m: React.JSX.Element) => void} setMessage
  */
 async function buildImage(
   baseUrl,
@@ -27,6 +28,7 @@ async function buildImage(
   setIsLaunching,
   setProgressState,
   setEnsureLogsVisible,
+  setMessage,
 ) {
   const buildEndPointURL = new URL("build/", baseUrl);
   let options = {};
@@ -57,6 +59,17 @@ async function buildImage(
         setIsLaunching(false);
         setProgressState(PROGRESS_STATES.FAILED);
         setEnsureLogsVisible(true);
+        if (
+          logBuffer.join("").match(
+            /User .+ already has a running server/gmi
+          ) !== null
+        ) {
+          setMessage(
+            <div style={{ textAlign: "center" }}>
+              <p><a href="/hub/home">Check your running servers</a>. You can only have one server running.</p>
+            </div>
+          );
+        }
         break;
       }
       case "ready": {
@@ -206,6 +219,8 @@ export function BuilderLauncher({
   const [fitAddon, setFitAddon] = useState(null);
   const [logsVisible, setLogsVisible] = useState(false);
   const logBufferRef = useRef(new Array());
+  const [serverRunningMessage, setMessage] = useState(<></>)
+
   useEffect(() => {
     async function setup() {
       if (isLaunching) {
@@ -219,14 +234,17 @@ export function BuilderLauncher({
           setIsLaunching,
           setProgressState,
           setLogsVisible,
+          setMessage
         );
       }
     }
     setup();
   }, [isLaunching]);
+
   return (
     <div className={className}>
-      <Progress progressState={progressState} />
+      <Progress progressState={progressState}/>
+      {serverRunningMessage}
       <ImageLogs
         setTerm={setTerm}
         setFitAddon={setFitAddon}
