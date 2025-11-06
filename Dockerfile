@@ -12,9 +12,16 @@ WORKDIR /binderhub
 RUN npm install \
     && npm run webpack
 
-
+# The actual image
 FROM $BASE_IMAGE
 
-COPY --from=build /binderhub/binderhub/static/dist/ /tmp/dist
+# Moving files to /tmp/binderhub to then put it in the correct package path
+RUN mkdir /tmp/binderhub
+COPY --from=build /binderhub/binderhub/static/dist/ /tmp/binderhub/dist
+COPY full-replay.svg /tmp/binderhub/
 
-RUN mv /tmp/dist/* $(python -c "import importlib.resources as impres; print(impres.files('binderhub'))")/static/dist
+RUN PKG_PATH=$(python -c 'import importlib.resources as impres; print(impres.files("binderhub"))') \
+	&& mv /tmp/binderhub/dist/* "$PKG_PATH/static/dist" \
+	&& mv /tmp/binderhub/full-replay.svg "$PKG_PATH/static/logo.svg" \
+	&& rm -rf /tmp/binderhub
+
