@@ -22,5 +22,6 @@ COPY full-replay.svg /tmp/binderhub/
 
 RUN PKG_PATH=$(python -c 'import importlib.resources as impres; print(impres.files("binderhub"))') \
 	&& mv /tmp/binderhub/dist/* "$PKG_PATH/static/dist" \
-	&& mv /tmp/binderhub/full-replay.svg "$PKG_PATH/static/logo.svg"
+	&& mv /tmp/binderhub/full-replay.svg "$PKG_PATH/static/logo.svg" \
+	&& rm /tmp/binderhub
 
