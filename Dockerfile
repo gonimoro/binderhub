@@ -25,3 +25,10 @@ RUN PKG_PATH=$(python -c 'import importlib.resources as impres; print(impres.fil
 	&& mv /tmp/binderhub/full-replay.svg "$PKG_PATH/static/logo.svg" \
 	&& rm -rf /tmp/binderhub
 
+# EC template go to separate dir so can be enabled in configration as needed
+# c.BinderHub.template_path = '/ec-templates/'
+# the template assumes hub static assets are avaialable at `/hub/static` URL,
+# if that's not the case, this URL should be defined with `template_variables`
+# config:
+# c.BinderHub.template_variables = {'hub_static_url': 'https://example.com/static'}
+COPY ec-templates /ec-templates
