@@ -16,6 +16,7 @@ c.BinderHub.registry_class = FakeRegistry
 c.BinderHub.builder_required = False
 c.BinderHub.repo_providers = {"fake": FakeProvider}
 c.BinderHub.build_class = FakeBuild
+c.BinderHub.template_path = '/Users/enolfc/src/notebooks/binderhub/ec-templates/'
 
 # Uncomment the following line to enable BinderHub's API only mode
 # With this, we can then use the `build_only` query parameter in the request
