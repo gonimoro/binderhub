@@ -1,5 +1,5 @@
 # Current binderhub image
-ARG BASE_IMAGE=quay.io/jupyterhub/k8s-binderhub:1.0.0-0.dev.git.3850.h7ccf7c8e
+ARG BASE_IMAGE=quay.io/jupyterhub/k8s-binderhub:1.0.0-0.dev.git.3983.h383374de
 
 # binderhub uses node 22
 # see https://github.com/jupyterhub/binderhub/blob/main/.github/workflows/publish.yml#L50
