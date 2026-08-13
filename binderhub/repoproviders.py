@@ -55,17 +55,13 @@ def strip_suffix(text, suffix):
 class RepoProvider(LoggingConfigurable):
     """Base class for a repo provider"""
 
-    name = Unicode(
-        help="""
+    name = Unicode(help="""
         Descriptive human readable name of this repo provider.
-        """
-    )
+        """)
 
-    spec = Unicode(
-        help="""
+    spec = Unicode(help="""
         The spec for this builder to parse
-        """
-    )
+        """)
 
     allowed_specs = List(
         help="""
@@ -324,18 +320,38 @@ class FigshareProvider(RepoProvider):
         "ref": {"enabled": False},
     }
 
-    url_regex = re.compile(r"(.*)/articles/([^/]+)/(\d+)(/)?(\d+)?")
-
     async def get_resolved_ref(self):
         client = AsyncHTTPClient()
         req = HTTPRequest(f"https://doi.org/{self.spec}", user_agent="BinderHub")
+        # fetch doi: will 404 if it doesn't exist
         r = await client.fetch(req)
+        # parse doi, not figshare url
+        _doi_n, _, identifier = self.spec.partition("/")
+        doi_fields = identifier.split(".")
+        # 2 cases:
+        # versioned: 10.6084/m9.figshare.9782777.v1
+        # unversioned: 10.6084/m9.figshare.9782777
+        if len(doi_fields) < 3:
+            raise ValueError(f"Unexpected figshare doi: {self.spec}")
+        if doi_fields[-1].startswith("v"):
+            article_version = doi_fields[-1][1:]
+            article_id = doi_fields[-2]
+        else:
+            # unversioned, get latest version from API
+            # unversioned defaults to latest,
+            # and figshare doesn't put version in url,
+            # so resolve latest version from api
+            article_id = doi_fields[-1]
+            r = await client.fetch(
+                f"https://api.figshare.com/v2/articles/{article_id}/versions",
+                user_agent="BinderHub",
+            )
+            # list of versions containing {"version": 2}
+            article_versions = json.loads(r.body)
+            if not article_versions:
+                raise ValueError(f"Article {article_id} has no versions")
+            article_version = sorted(v["version"] for v in article_versions)[-1]
 
-        match = self.url_regex.match(r.effective_url)
-        article_id = match.groups()[2]
-        article_version = match.groups()[4]
-        if not article_version:
-            article_version = "1"
         self.record_id = f"{article_id}.v{article_version}"
 
         return self.record_id
@@ -759,12 +775,10 @@ class GitLabRepoProvider(RepoProvider):
     def _private_token_default(self):
         return os.getenv("GITLAB_PRIVATE_TOKEN", "")
 
-    auth = Dict(
-        help="""Auth parameters for the GitLab API access
+    auth = Dict(help="""Auth parameters for the GitLab API access
 
         Populated from access_token, private_token
-    """
-    )
+    """)
 
     @default("auth")
     def _default_auth(self):

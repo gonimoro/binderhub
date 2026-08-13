@@ -55,6 +55,12 @@ BUILDS_INPROGRESS = Gauge("binderhub_inprogress_builds", "Builds currently in pr
 LAUNCHES_INPROGRESS = Gauge(
     "binderhub_inprogress_launches", "Launches currently in progress"
 )
+BUILDS_REJECTED = Counter(
+    "binderhub_builds_rejected",
+    "Counter of rejected build requests",
+    # often rejected before spec is resolved to repo, so use spec
+    ["reason", "spec", "user_agent"],
+)
 
 
 def _get_image_basename_and_tag(full_name):
@@ -146,6 +152,7 @@ class BuildHandler(BaseHandler):
     # emit keepalives every 25 seconds to avoid idle connections being closed
     KEEPALIVE_INTERVAL = 25
     build = None
+    spec_prefix = "/build/"
 
     async def emit(self, data):
         """Emit an eventstream event"""
@@ -157,7 +164,14 @@ class BuildHandler(BaseHandler):
             self.write(f"data: {serialized_data}\n\n")
             await self.flush()
         except StreamClosedError:
-            app_log.warning("Stream closed while handling %s", self.request.uri)
+            # Log extra when builds drop, as this may correlate with bot traffic
+            # (also lots of impatient humans and slow builds)
+            app_log.warning(
+                "Stream closed while handling %s, ip=%s, user_agent=%r",
+                self.request.uri,
+                self.request.remote_ip,
+                self.request.headers.get("User-Agent", None),
+            )
             # raise Finish to halt the handler
             raise Finish()
 
@@ -188,6 +202,8 @@ class BuildHandler(BaseHandler):
 
     def send_error(self, status_code, **kwargs):
         """event stream cannot set an error code, so send an error event"""
+        # make sure status is set (not usually on event-stream requests)
+        self.set_status(status_code)
         exc_info = kwargs.get("exc_info")
         message = ""
         if exc_info:
@@ -250,6 +266,58 @@ class BuildHandler(BaseHandler):
         # disable redirect to login, which won't work for EventSource
         raise HTTPError(403)
 
+    def check_request_ip(self):
+        try:
+            super().check_request_ip()
+        except HTTPError:
+            self._record_rejected_build(reason="banned_ip")
+            raise
+
+    def check_rate_limit(self):
+        try:
+            super().check_rate_limit()
+        except HTTPError:
+            self._record_rejected_build(reason="rate_limit")
+            raise
+
+    def _record_rejected_build(self, reason, msg=""):
+        provider_id, spec = self.get_spec_from_request()
+        spec = f"{provider_id}/{spec}"
+
+        user_agent = self.request.headers.get("User-Agent", "")
+        ip = self.request.remote_ip
+        app_log.warning(
+            "Rejecting build: %s reason=%s spec=%s ip=%s user_agent=%r",
+            msg,
+            reason,
+            spec,
+            ip,
+            user_agent,
+        )
+        BUILDS_REJECTED.labels(reason=reason, spec=spec, user_agent=user_agent).inc()
+
+    async def prepare(self):
+        super().prepare()
+
+        # check Accept header to make sure it's a real EventSource request
+        accept_header = self.request.headers.get("Accept", "")
+        accept = {s.strip().lower() for s in accept_header.split(",")}
+
+        user_agent = self.request.headers.get("User-Agent", "")
+        block_build_user_agents = self.settings.get("block_build_user_agents", [])
+        for pattern in block_build_user_agents:
+            if pattern.match(user_agent):
+                self._record_rejected_build(
+                    reason="user_agent", msg=f"user agent matching {pattern}"
+                )
+                raise HTTPError(403, "Bots not allowed")
+
+        if "text/event-stream" not in accept:
+            self._record_rejected_build(
+                reason="accept_header", msg=f"Accept={accept_header!r}"
+            )
+            raise HTTPError(400, "Missing Accept header: text/event-stream")
+
     @authenticated
     async def get(self, provider_prefix, _unescaped_spec):
         """Get a built image for a given spec and repo provider.
@@ -266,8 +334,7 @@ class BuildHandler(BaseHandler):
                 repo, ref, etc.)
 
         """
-        prefix = "/build/" + provider_prefix
-        spec = self.get_spec_from_request(prefix)
+        _, spec = self.get_spec_from_request()
 
         # verify the build token and rate limit
         build_token = self.get_argument("build_token", None)
@@ -295,6 +362,7 @@ class BuildHandler(BaseHandler):
             return
 
         if provider.is_banned():
+            self._record_rejected_build(reason="banned_repo")
             await self.emit(
                 {
                     "phase": "failed",
@@ -452,22 +520,7 @@ class BuildHandler(BaseHandler):
                         await self.launch(provider)
                     except LaunchQuotaExceeded:
                         return
-                self.event_log.emit(
-                    "binderhub.jupyter.org/launch",
-                    5,
-                    {
-                        "provider": provider.name,
-                        "spec": spec,
-                        "ref": ref,
-                        "status": "success",
-                        "build_token": self._have_build_token,
-                        "origin": (
-                            self.settings["normalized_origin"]
-                            if self.settings["normalized_origin"]
-                            else self.request.host
-                        ),
-                    },
-                )
+                self.emit_launch_event(provider, spec, ref)
             return
 
         # Don't allow builds when quota is exceeded
@@ -610,22 +663,7 @@ class BuildHandler(BaseHandler):
             # Launch after building an image
             with LAUNCHES_INPROGRESS.track_inprogress():
                 await self.launch(provider)
-            self.event_log.emit(
-                "binderhub.jupyter.org/launch",
-                5,
-                {
-                    "provider": provider.name,
-                    "spec": spec,
-                    "ref": ref,
-                    "status": "success",
-                    "build_token": self._have_build_token,
-                    "origin": (
-                        self.settings["normalized_origin"]
-                        if self.settings["normalized_origin"]
-                        else self.request.host
-                    ),
-                },
-            )
+            self.emit_launch_event(provider, spec, ref)
 
         # Don't close the eventstream immediately.
         # (javascript) eventstream clients reconnect automatically on dropped connections,
@@ -636,6 +674,35 @@ class BuildHandler(BaseHandler):
         # The duration of this shouldn't matter because
         # well-behaved clients will close connections after they receive the launch event.
         await asyncio.sleep(60)
+
+    def emit_launch_event(self, provider, spec, ref):
+        """Emit a single launch event to the activity log"""
+        host = (
+            self.settings["normalized_origin"]
+            if self.settings["normalized_origin"]
+            else self.request.host
+        )
+        request_origin = self.request.headers.get("Origin")
+        if request_origin is None:
+            # we still want to distinguish _likely_ scripts from regular browser visits,
+            # which should always have sec-fetch-site: same-origin
+            # (scripts will generally not set this header unless they are explicitly trying to spoof browsers)
+            # ref: https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Site
+            request_origin = self.request.headers.get("Sec-Fetch-Site", "")
+        self.event_log.emit(
+            "binderhub.jupyter.org/launch",
+            6,
+            {
+                "provider": provider.name,
+                "spec": spec,
+                "ref": ref,
+                "status": "success",
+                "build_token": self._have_build_token,
+                # 'origin' should have been called host, but can't break things
+                "origin": host,
+                "request_origin": request_origin,
+            },
+        )
 
     async def check_quota(self, provider):
         """Check quota before proceeding with build/launch
@@ -687,6 +754,8 @@ class BuildHandler(BaseHandler):
             }
         )
 
+        client_ip = self.request.remote_ip
+
         launcher = self.settings["launcher"]
         retry_delay = launcher.retry_delay
         for i in range(launcher.retries):
@@ -720,6 +789,7 @@ class BuildHandler(BaseHandler):
                     "binder_launch_host": self.binder_launch_host,
                     "binder_request": self.binder_request,
                     "binder_persistent_request": self.binder_persistent_request,
+                    "binder_client_ip": client_ip,
                 }
                 server_info = await launcher.launch(
                     image=self.image_name,

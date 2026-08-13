@@ -207,6 +207,7 @@ jupyterhub:
                     "binder_launch_host",
                     "binder_persistent_request",
                     "binder_request",
+                    "binder_client_ip",
                 ):
                     if key in self.user_options:
                         env[key.upper()] = self.user_options[key]
@@ -306,7 +307,7 @@ pink:
   daemonset:
     image:
       name: quay.io/podman/stable
-      tag: "v5.7.1" # ref: https://quay.io/repository/podman/stable
+      tag: "v5.8.2" # ref: https://quay.io/repository/podman/stable
       pullPolicy: ""
       pullSecrets: []
     lifecycle: {}
@@ -341,6 +342,17 @@ imageCleaner:
     dockerSocketDir: /var/run
     dockerSocketName: docker.sock
     dockerLibDir: /var/lib/docker
+
+httpRoute:
+  enabled: false
+  annotations: {}
+  hostnames: []
+  parentRefs: []
+  filters: []
+  matches:
+    - path:
+        type: PathPrefix
+        value: /
 
 ingress:
   enabled: false
